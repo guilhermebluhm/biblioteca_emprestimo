@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Genre{
@@ -39,7 +39,8 @@ struct Magazine{
 enum Item_kind{
     Book,
     Dvd,
-    Magazine
+    Magazine,
+    None
 }
 
 #[derive(Debug)]
@@ -90,10 +91,9 @@ struct Library{
     fine_block_threshold: f64 
 }
 
-enum LookupError{
-    
-    LoanNotFound(u32),
-    ReservationNotFound(u32),
+enum LoanError{
+    LoanNotFound(usize),
+    AlreadyReturned(usize), //O loan já foi devolvido (returned == true). Carrega o loan_id.
 }
 
 enum BusinessLogicErrorCheckout{
@@ -107,7 +107,6 @@ enum BusinessLogicErrorCheckout{
 }
 
 enum BusinessLogicErrorReturnedRenew{
-    AlreadyReturned(u32), //O loan já foi devolvido (returned == true). Carrega o loan_id.
     MaxRenewalsReached, //loan.renewals já atingiu o valor de max_renewals() do item. Carrega loan_id e o limite máximo para a mensagem
     RenewalBlockedByReservation //Existe ao menos uma reserva pendente (não notificada) para o item deste loan. 
                                 //A renovação é negada para liberar o item para quem está esperando. Carrega item_id
@@ -150,6 +149,7 @@ impl Library{
                     m.avaliable = flag;
                 }
             }
+            _ => ()
         }
 
     }
@@ -253,6 +253,7 @@ impl Library{
                 magazine_mut.avaliable = false;
 
             }
+            _ => ()
         }
 
         let user_reservations = self.users.get_mut(&user_id).unwrap();
@@ -262,6 +263,46 @@ impl Library{
         self.reservation_library.retain(|f| f.item_id != item_id);
 
         Ok(actual_loan_id+1)
+    }
+
+    fn return_item(&mut self, ID: usize) -> Result<f64, LoanError> {
+
+        let mut due_day: u32 = 0;
+
+        if let Some(x) = self.loans_library.iter().find(|f| f.id == ID){
+            if x.returned {
+                return Err(LoanError::AlreadyReturned(ID))
+            }
+
+            due_day = x.due_day;
+
+        }
+        else{
+            return Err(LoanError::LoanNotFound(ID))
+        }
+
+        let mut diff: f64 = 0.00;
+        let mut fine: f64 = 0.00;
+
+        if self.today > due_day {
+            diff = (self.today as f64) - (due_day as f64);
+            fine = diff * self.fine_per_day;
+        }
+
+        let loan = self.loans_library.get_mut(ID).unwrap();
+        loan.returned = true;
+        loan.returned_day = Some(self.today);
+
+        let user_loan = self.users.get_mut(&loan.user_id).unwrap();
+        user_loan.unpaid_fine += fine;
+        user_loan.active_loan_ids.retain(|f| f.item_id != user_loan.id);
+
+        if let Some(x) = self.reservation_library.iter_mut()
+        .min_by_key(|f| f.id == user_loan.id && f.notified == false){
+            x.notified = true;
+        }
+
+        Ok(fine)
     }
 
 }
