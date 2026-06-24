@@ -94,6 +94,12 @@ struct Library{
 enum LoanError{
     LoanNotFound(usize),
     AlreadyReturned(usize), //O loan já foi devolvido (returned == true). Carrega o loan_id.
+    UserNotFound(u32),
+    ItemNotFound(u32),
+    MaxRenewalsReached, //loan.renewals já atingiu o valor de max_renewals() do item. 
+                        //Carrega loan_id e o limite máximo para a mensagem
+    RenewalBlockedByReservation //Existe ao menos uma reserva pendente (não notificada) para o item deste loan. 
+                                //A renovação é negada para liberar o item para quem está esperando. Carrega item_id
 }
 
 enum BusinessLogicErrorCheckout{
@@ -104,12 +110,6 @@ enum BusinessLogicErrorCheckout{
                     //O item não pode ser emprestado para outra pessoa enquanto houver reserva.
     UserNotFound(u32),
     ItemNotFound(u32),
-}
-
-enum BusinessLogicErrorReturnedRenew{
-    MaxRenewalsReached, //loan.renewals já atingiu o valor de max_renewals() do item. Carrega loan_id e o limite máximo para a mensagem
-    RenewalBlockedByReservation //Existe ao menos uma reserva pendente (não notificada) para o item deste loan. 
-                                //A renovação é negada para liberar o item para quem está esperando. Carrega item_id
 }
 
 enum BusinessLogicErrorReserve{
@@ -303,6 +303,93 @@ impl Library{
         }
 
         Ok(fine)
+    }
+
+    fn pay_fine(&mut self, user_id: u32, amount: f64) -> Result<f64, LoanError>{
+
+        let mut result = 0.00;
+        if let Some(x) = self.users.get_mut(&user_id){
+            result = (x.unpaid_fine - amount).max(0.00); //garantee never less than zero
+            x.unpaid_fine = result;
+        }
+        else{
+            return Err(LoanError::UserNotFound(user_id))
+        }
+        Ok(result)
+
+    }
+
+    fn renew_loan(&mut self, loan_id: usize, kind: Item_kind) -> Result<u32, LoanError> {
+
+        let mut item_id_for_fetch = 0;
+        let mut renewals_loan = 0;
+        let mut due_day_loan = 0;
+        let mut days_loan_limit_by_item = 0;
+
+        if let Some(x) = self.loans_library.get(loan_id){
+            if x.returned {
+                return Err(LoanError::AlreadyReturned(loan_id))
+            }
+            item_id_for_fetch = x.item_id;
+            renewals_loan = x.renewels;
+            due_day_loan = x.due_day;
+        }
+        else{
+            return Err(LoanError::LoanNotFound(loan_id))
+        }
+
+        match kind {
+            Item_kind::Book => {
+                if let Some(x) = self.find_book(item_id_for_fetch){
+                    if renewals_loan >= x.max_renewals() {
+                        return Err(LoanError::MaxRenewalsReached)
+                    }
+                    if self.reservation_library.get(x.id as usize).is_some(){
+                        return Err(LoanError::RenewalBlockedByReservation)
+                    }
+                    days_loan_limit_by_item = x.days_loan_limit();
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id_for_fetch))
+                }
+            }
+            Item_kind::Dvd => {
+                if let Some(x) = self.find_dvd(item_id_for_fetch){
+                    if renewals_loan >= x.max_renewals() {
+                        return Err(LoanError::MaxRenewalsReached)
+                    }
+                    if self.reservation_library.get(x.id as usize).is_some(){
+                        return Err(LoanError::RenewalBlockedByReservation)
+                    }
+                    days_loan_limit_by_item = x.days_loan_limit();
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id_for_fetch))
+                }
+            }
+            Item_kind::Magazine => {
+                if let Some(x) = self.find_magazine(item_id_for_fetch){
+                    if renewals_loan >= x.max_renewals() {
+                        return Err(LoanError::MaxRenewalsReached)
+                    }
+                    if self.reservation_library.get(x.id as usize).is_some(){
+                        return Err(LoanError::RenewalBlockedByReservation)
+                    }
+                    days_loan_limit_by_item = x.days_loan_limit();
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id_for_fetch))
+                }
+            }
+            _ => ()
+        }
+
+        let loan = self.loans_library.get_mut(loan_id).unwrap();
+        loan.due_day = (due_day_loan + days_loan_limit_by_item);
+        loan.renewels += 1;
+
+        Ok(loan.due_day)
+
     }
 
 }
