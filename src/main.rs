@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::{collections::HashMap, vec};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Genre{
@@ -54,7 +54,7 @@ struct User{
     unpaid_fine: f64
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Reservation{
     id: u32,
     item_id: u32,
@@ -98,8 +98,10 @@ enum LoanError{
     ItemNotFound(u32),
     MaxRenewalsReached, //loan.renewals já atingiu o valor de max_renewals() do item. 
                         //Carrega loan_id e o limite máximo para a mensagem
-    RenewalBlockedByReservation //Existe ao menos uma reserva pendente (não notificada) para o item deste loan. 
+    RenewalBlockedByReservation, //Existe ao menos uma reserva pendente (não notificada) para o item deste loan. 
                                 //A renovação é negada para liberar o item para quem está esperando. Carrega item_id
+    ItemAlreadyAvailable(u32), //O usuário tentou reservar um item que está disponível. O sistema deve orientá-lo a fazer o empréstimo diretamente. Carrega item_id.
+    AlreadyReservedByUser(u32) //O mesmo usuário já tem uma reserva ativa para este item. Não é permitido reservar duas vezes o mesmo item. Carrega item_id.
 }
 
 enum BusinessLogicErrorCheckout{
@@ -110,11 +112,6 @@ enum BusinessLogicErrorCheckout{
                     //O item não pode ser emprestado para outra pessoa enquanto houver reserva.
     UserNotFound(u32),
     ItemNotFound(u32),
-}
-
-enum BusinessLogicErrorReserve{
-    ItemAlreadyAvailable(u32), //O usuário tentou reservar um item que está disponível. O sistema deve orientá-lo a fazer o empréstimo diretamente. Carrega item_id.
-    AlreadyReservedByUser(u32) //O mesmo usuário já tem uma reserva ativa para este item. Não é permitido reservar duas vezes o mesmo item. Carrega item_id.
 }
 
 impl Library{
@@ -129,29 +126,6 @@ impl Library{
 
     fn find_magazine(&self, id: u32) -> Option<&Magazine> {
         self.magazines.get(&id)
-    }
-
-    fn set_avaliable(&mut self, item_id: u32, itemKind: Item_kind, flag: bool) -> () {
-
-        match itemKind {
-            Item_kind::Book => {
-                if let Some(b) = self.books.get_mut(&item_id){
-                    b.avaliable = flag;
-                }
-            }
-            Item_kind::Dvd => {
-                if let Some(d) = self.dvds.get_mut(&item_id){
-                    d.avaliable = flag;
-                }
-            }
-            Item_kind::Magazine => {
-                if let Some(m) = self.magazines.get_mut(&item_id){
-                    m.avaliable = flag;
-                }
-            }
-            _ => ()
-        }
-
     }
 
     fn checkout(&mut self, user_id: u32, item_id: u32, itemKind: Item_kind) -> Result<usize, BusinessLogicErrorCheckout> {
@@ -390,6 +364,71 @@ impl Library{
 
         Ok(loan.due_day)
 
+    }
+
+    fn reserve(&mut self, user_id: u32, item_id: u32, itemKind: Item_kind) -> Result<u32, LoanError>{
+
+        if let None = self.users.get(&user_id){
+            return Err(LoanError::UserNotFound(user_id))
+        }
+        match itemKind {
+            Item_kind::Book => {
+                if let Some(x) = self.find_book(item_id){
+                    if x.avaliable {
+                        return Err(LoanError::ItemAlreadyAvailable(item_id))
+                    }
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id))
+                }
+            }
+            Item_kind::Dvd => {
+                if let Some(x) = self.find_dvd(item_id){
+                    if x.avaliable {
+                        return Err(LoanError::ItemAlreadyAvailable(item_id))
+                    }
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id))
+                }
+            }
+            Item_kind::Magazine => {
+                if let Some(x) = self.find_magazine(item_id){
+                    if x.avaliable {
+                        return Err(LoanError::ItemAlreadyAvailable(item_id))
+                    }
+                }
+                else{
+                    return Err(LoanError::ItemNotFound(item_id))
+                }
+            }
+            _ => ()
+        }
+
+        //lembrando iterador (any) => tem ação de "curto-circuito" mas tem o papel de flagear true/false
+        //lembrando iterador (find) => tem ação de "curto-circuito" mas tem o papel de retornar o objeto
+        if self.reservation_library.iter().any(|f| f.user_id == user_id && f.item_id == item_id){
+            return Err(LoanError::AlreadyReservedByUser(user_id))
+        }
+
+        let reservation_id = (self.next_reservation_id + 1) as u32;
+        let reservation = Reservation{id: reservation_id, item_id: item_id, 
+            user_id: user_id, reserved_on: self.today, notified: false};
+        self.reservation_library.push(reservation.clone());
+        self.users.get_mut(&user_id).unwrap().reservation_ids.push(reservation);
+        
+        Ok(reservation_id)
+    }
+
+    fn queue_position(&mut self, user_id: u32, item_id: u32) -> Option<u32> {
+
+        let mut filter_reservation_lib:Vec<&mut Reservation> = self.reservation_library.iter_mut().filter(|f| f.item_id == item_id).collect();
+        let _ = filter_reservation_lib.sort_by_key(|a| a.reserved_on);
+        let item = filter_reservation_lib.iter().min_by_key(|f| f.user_id == user_id);
+        if item.is_some(){
+            return Some(item.unwrap().user_id)
+        }
+        None
     }
 
 }
